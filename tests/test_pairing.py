@@ -1,4 +1,4 @@
-"""Tests for crokinole pairing algorithm.
+"""Tests for crokinole pairing algorithm (doubles + singles).
 
 Uses fake players and tracks all pair outcomes.
 """
@@ -602,15 +602,17 @@ def test_table_assignment_with_pairing():
 
 
 def test_large_scale():
-    """Validate algorithm at scale (200 present, 500 roster).
+    """Validate algorithm at near-tournament scale (300 present).
 
-    Fresh graph should complete in <2s.  This guards against
-    performance regressions in blossom matching.
+    World Crokinole Championship competitive singles draws ~300
+    players.  Fresh graph at 300 present completes in <2s on dev
+    machines.  5s timeout allows for CI variance.  400 present is
+    the 5s ceiling — this test stays at 300 to keep suite fast.
     """
-    roster = [f"P{i}" for i in range(500)]
+    roster = [f"P{i}" for i in range(600)]
     mgr = LeaguePairingManager(roster)
 
-    full = roster[:200]
+    full = roster[:300]
     num_tables = len(full) // 4
     max_teams = num_tables * 2
 
@@ -619,7 +621,10 @@ def test_large_scale():
     rnd = mgr.next_round(full, num_tables)
     t1 = time.perf_counter()
 
-    assert t1 - t0 < 2.0, f"Fresh graph 200 present took {t1-t0:.2f}s (limit 2s)"
+    timeout = 5.0
+    assert t1 - t0 < timeout, (
+        f"Fresh graph 300 present took {t1-t0:.2f}s (limit {timeout}s)"
+    )
 
     teams = rnd["teams"]
     tables = rnd["tables"]
@@ -638,7 +643,139 @@ def test_large_scale():
         seen.add((a, b))
 
     assert len(seen) == len(teams), "Duplicate teams found"
-    print(f"  large scale OK (200 present, {t1-t0:.3f}s)")
+    print(f"  large scale OK (300 present, {t1-t0:.3f}s)")
+
+
+# ── Singles tests ──
+
+def test_singles_basic():
+    """Singles: correct match count, table format, no self-pair."""
+    mgr = LeaguePairingManager(["A", "B", "C", "D"], mode="singles")
+    rnd = mgr.next_round(["A", "B", "C", "D"], num_tables=2)
+
+    assert rnd["round"] == 1
+    assert "matches" in rnd
+    assert len(rnd["matches"]) == 2
+    assert len(rnd["tables"]) == 2
+    assert len(rnd["bye"]) == 0
+
+    for tn, m1, m2 in rnd["tables"]:
+        assert 1 <= tn <= 2
+        assert m2 is None  # singles: one match per table
+        assert m1 is not None
+        a, b = m1
+        assert a != b
+
+    seen = set()
+    for a, b in rnd["matches"]:
+        assert (a, b) not in seen and (b, a) not in seen
+        seen.add((a, b))
+    print("  singles basic OK")
+
+
+def test_singles_odd():
+    """Singles with odd players: one bye."""
+    mgr = LeaguePairingManager(["A", "B", "C", "D", "E"], mode="singles")
+    rnd = mgr.next_round(["A", "B", "C", "D", "E"], num_tables=2)
+
+    assert len(rnd["matches"]) == 2
+    assert len(rnd["bye"]) == 1
+    assert len(rnd["tables"]) == 2
+    print("  singles odd OK")
+
+
+def test_singles_no_repeat_opponents():
+    """Singles: same players should not face same opponent twice."""
+    players = ["A", "B", "C", "D"]
+    mgr = LeaguePairingManager(players, mode="singles")
+
+    r1 = mgr.next_round(players, num_tables=2)
+    r2 = mgr.next_round(players, num_tables=2)
+
+    # All 4 players should have a match in each round
+    assert len(r1["matches"]) == 2
+    assert len(r2["matches"]) == 2
+
+    # Opponents from round 1 should not face each other in round 2
+    r1_pairs = {frozenset(m) for m in r1["matches"]}
+    r2_pairs = {frozenset(m) for m in r2["matches"]}
+    assert not (r1_pairs & r2_pairs), (
+        f"Same opponents in both rounds: {r1_pairs & r2_pairs}"
+    )
+    print("  singles no repeat opponents OK")
+
+
+def test_singles_table_back_to_back():
+    """Singles: track table repeats for back-to-back avoidance."""
+    mgr = LeaguePairingManager(["A", "B", "C", "D", "E", "F"], mode="singles")
+
+    r1 = mgr.next_round(["A", "B", "C", "D", "E", "F"], num_tables=3)
+    r2 = mgr.next_round(["A", "B", "C", "D", "E", "F"], num_tables=3)
+
+    # Each round: 3 matches, 0 bye
+    assert len(r1["matches"]) == 3
+    assert len(r2["matches"]) == 3
+
+    # Table tracking should be active
+    assert len(mgr.last_table_rosters) == 2
+    for roster in mgr.last_table_rosters:
+        assert all(len(t) == 2 for t in roster)  # 2 players per table
+    print("  singles table back-to-back OK")
+
+
+def test_singles_default_num_tables():
+    """Singles: default num_tables = present // 2."""
+    mgr = LeaguePairingManager(["A", "B", "C", "D", "E", "F"], mode="singles")
+    rnd = mgr.next_round(["A", "B", "C", "D", "E", "F"])
+    assert len(rnd["tables"]) == 3  # 6 // 2 = 3
+    assert len(rnd["matches"]) == 3
+    print("  singles default num_tables OK")
+
+
+def test_singles_variable_attendance():
+    """Singles: same roster, different attendance."""
+    roster = ["A", "B", "C", "D", "E", "F", "G", "H"]
+    mgr = LeaguePairingManager(roster, mode="singles")
+
+    r1 = mgr.next_round(["A", "B", "C", "D"], num_tables=2)
+    assert len(r1["matches"]) == 2
+    assert len(r1["bye"]) == 0
+
+    r2 = mgr.next_round(["A", "B", "C", "D", "E", "F"], num_tables=3)
+    assert len(r2["matches"]) == 3
+    assert len(r2["bye"]) == 0
+
+    # Different round numbers
+    assert r1["round"] == 1
+    assert r2["round"] == 2
+    print("  singles variable attendance OK")
+
+
+def test_singles_large_scale():
+    """Singles at 200 present — validate speed + correctness."""
+    roster = [f"P{i}" for i in range(400)]
+    mgr = LeaguePairingManager(roster, mode="singles")
+
+    full = roster[:200]
+    num_tables = 100
+
+    import time
+    t0 = time.perf_counter()
+    rnd = mgr.next_round(full, num_tables)
+    t1 = time.perf_counter()
+
+    assert t1 - t0 < 5.0, f"Singles 200 present took {t1-t0:.2f}s"
+    assert len(rnd["matches"]) == num_tables
+    assert len(rnd["bye"]) == 0
+    assert len(rnd["tables"]) == num_tables
+
+    seen = set()
+    for a, b in rnd["matches"]:
+        assert a != b
+        assert (a, b) not in seen and (b, a) not in seen
+        seen.add((a, b))
+    print(f"  singles large scale OK (200 present, {t1-t0:.3f}s)")
+
 
 
 
