@@ -60,7 +60,6 @@ None. Table assignment is purely best-effort optimization.
 |--------|-----------|---------|
 | `next_round()` | `() -> dict | None` | `{round, teams, bye}` or `None` if < 2 players |
 | `get_pair_stats()` | `() -> dict[pair, count]` | Count of times each pair was teamed |
-| `get_player_pair_counts(player)` | `() -> dict[partner, count]` | Partner counts for one player |
 
 **Return dict `next_round()`:**
 ```python
@@ -81,8 +80,6 @@ None. Table assignment is purely best-effort optimization.
 | `get_state()` | `() -> dict` | Serialize state for external persistence (Firebase, etc.) |
 | `set_state(data)` | `(dict) -> None` | Restore state from dict (no file needed) |
 | `reset()` | `() -> None` | Clear state + persist |
-| `get_pair_stats()` | `() -> dict[pair, count]` | Pair frequencies |
-| `get_table_pair_stats()` | `() -> dict[pair, count]` | Table-neighbor frequencies |
 | `get_player_pair_counts(player)` | `() -> dict[partner, count]` | Partner counts for one player |
 
 **Return dict `next_round()`:**
@@ -182,8 +179,7 @@ Each spec item should map to at least one test. Current test coverage:
 - **Overflow**: `test_mgr_table_overflow_players_sit`
 - **Stateless table assignment**: `test_assign_tables`, `test_table_assignment_with_pairing` (in `tests/test_pairing.py`)
 - **Blossom correctness**: Implicit in all `LeaguePairingManager` tests; explicit near-exhaustion in `test_mgr_no_repeats_across_rounds`
-- **Assignment determinism**: `test_assign_tables_deterministic` — same score across calls signals iteration count is sufficient
 - **One-iteration proof**: `test_assign_tables_one_iter_sufficient` — full tie space (empty history), 20 trials all score 0, proving 1 iteration finds optimum
-- **Deterministic assignment**: `test_assign_tables_deterministic` — same score across calls signals iteration count is sufficient
+- **Determinism**: `test_assign_tables_deterministic` — same score across calls signals iteration count is sufficient
 
 All tests in `tests/test_pairing.py`.
