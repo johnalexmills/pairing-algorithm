@@ -66,6 +66,33 @@ leagues/{leagueId}/
       [2, ["Eve","Frank"], ["Grace","Henry"]]
     ],
     bye: [],
+    mode: "doubles",
+    created_at: Timestamp
+  }
+
+### Singles mode sample
+
+```
+leagues/{leagueId}/
+  state: {
+    used_pairs: [["Alice","Bob"], ...],
+    last_table_rosters: [[{"Alice","Bob"}, {"Carol","Dave"}], ...],
+    player_last_table: {"Alice": 1, "Bob": 2, ...},
+    round_count: 5,
+    mode: "singles",
+    present: ["Alice","Bob","Carol","Dave"],
+    num_tables: 2,
+    updated_at: Timestamp
+  }
+
+  rounds/{round_number}/
+    matches: [["Alice","Bob"], ["Carol","Dave"]],
+    tables: [
+      [1, ["Alice","Bob"], None],
+      [2, ["Carol","Dave"], None]
+    ],
+    bye: [],
+    mode: "singles",
     created_at: Timestamp
   }
 ```
@@ -89,7 +116,7 @@ class FirebasePairingManager:
     `num_tables = len(present) // 4`. Only 1 iteration needed.
     """
 
-    def __init__(self, roster, league_id, cred_path=None):
+    def __init__(self, roster, league_id, cred_path=None, mode="doubles"):
         if not firebase_admin._apps:
             cred = credentials.Certificate(cred_path) if cred_path else None
             firebase_admin.initialize_app(cred)
@@ -98,19 +125,19 @@ class FirebasePairingManager:
         self.state_ref = self.db.collection("leagues").document(league_id)
         self.rounds_ref = self.state_ref.collection("rounds")
 
-        self._mgr = LeaguePairingManager(roster, state_path=None)
+        self._mgr = LeaguePairingManager(roster, state_path=None, mode=mode)
 
         doc = self.state_ref.get()
         if doc.exists:
             self._mgr.set_state(doc.to_dict())
 
-    def next_round(self, present_players, num_tables=None):
-        rnd = self._mgr.next_round(present_players, num_tables)
+    def next_round(self, present_players, num_tables=None, mode=None):
+        rnd = self._mgr.next_round(present_players, num_tables, mode=mode)
         self._push_to_firestore(rnd, present_players, num_tables)
         return rnd
 
-    def generate_night(self, present_players, num_rounds, num_tables=None):
-        rounds = self._mgr.generate_night(present_players, num_rounds, num_tables)
+    def generate_night(self, present_players, num_rounds, num_tables=None, mode=None):
+        rounds = self._mgr.generate_night(present_players, num_rounds, num_tables, mode=mode)
         for rnd in rounds:
             self._push_to_firestore(rnd, present_players, num_tables)
         return rounds
@@ -122,8 +149,11 @@ class FirebasePairingManager:
             doc.reference.delete()
 
     def _push_to_firestore(self, rnd, present, num_tables):
+        is_singles = "matches" in rnd
+        match_key = "matches" if is_singles else "teams"
+        denom = 2 if is_singles else 4
         self.rounds_ref.document(str(rnd["round"])).set({
-            "teams": [list(t) for t in rnd["teams"]],
+            match_key: [list(t) for t in rnd[match_key]],
             "tables": [
                 [tn,
                  list(t1) if t1 else None,
@@ -131,12 +161,13 @@ class FirebasePairingManager:
                 for tn, t1, t2 in rnd["tables"]
             ],
             "bye": rnd["bye"],
+            "mode": "singles" if is_singles else "doubles",
             "created_at": firestore.SERVER_TIMESTAMP,
         })
 
         state = self._mgr.get_state()
         state["present"] = present
-        state["num_tables"] = num_tables or max(1, len(present) // 4)
+        state["num_tables"] = num_tables or max(1, len(present) // denom)
         state["updated_at"] = firestore.SERVER_TIMESTAMP
         self.state_ref.set(state)
 ```
@@ -147,11 +178,16 @@ class FirebasePairingManager:
 
 ```python
 roster = ["Alice","Bob","Carol","Dave","Eve","Frank","Grace","Henry"]
-mgr = FirebasePairingManager(roster, league_id="summer-league-2026")
 
-# Each round
+# Doubles (default)
+mgr = FirebasePairingManager(roster, league_id="summer-league-2026")
 rnd = mgr.next_round(present_players)
-# Round immediately available in Firestore for all devices
+# rnd["teams"] -> [["Alice","Bob"], ...]
+
+# Singles
+mgr_s = FirebasePairingManager(roster, league_id="summer-league-2026", mode="singles")
+rnd_s = mgr_s.next_round(present_players)
+# rnd_s["matches"] -> [["Alice","Bob"], ...]
 ```
 
 ### Viewer devices (read-only)

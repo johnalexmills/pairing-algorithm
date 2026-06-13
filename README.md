@@ -32,10 +32,10 @@ Roster size (>1000) has no meaningful impact — bottleneck is present players p
 
 ## Problem
 
-A crokinole league night has 8–50 players. Each round, players pair into teams of 2; two teams sit at one table (4 players). Over multiple rounds and nights, no two players should repeat as teammates until all possible pairings are exhausted. Attendance varies night to night. Players should also not share a table with the same opponents in consecutive rounds.
+A crokinole league night has 8–50 players. In **doubles** mode, each round players pair into teams of 2; two teams sit at one table (4 players). In **singles** mode, each table has one 1v1 match (2 players). Over multiple rounds and nights, no two players should repeat as teammates (doubles) or opponents (singles) until all possible pairings are exhausted. Attendance varies night to night. Players should also not share a table with the same opponents in consecutive rounds.
 
 This reduces to two subproblems:
-1. **Maximum matching** in a graph where edges represent unused teammate pairs.
+1. **Maximum matching** in a graph where edges represent unused teammate/opponent pairs.
 2. **Table assignment** minimizing back-to-back rematches.
 
 ## Algorithm 1: Maximum Matching
@@ -111,6 +111,7 @@ Back-to-back can be structurally unavoidable in small pools (8 players / 2 table
 | `last_table_rosters` | `list[list[list[str]]]` | All prior round table sets, for repeat detection |
 | `player_last_table` | `dict[str, int]` | Last table number per player, for rotation |
 | `round_count` | `int` | 1-based round counter |
+| `mode` | `str` | `"doubles"` or `"singles"` (set at construction) |
 
 ### Persistence across sessions
 
@@ -155,12 +156,28 @@ Tested at 50-player roster, 20 present, 5 rounds — completes in < 1s.
 
 ```
 pairing.py              Core: RoundRobinPairing, LeaguePairingManager
-tests/test_pairing.py   30 tests
-examples/demo.py        24-player / 5-round demo (own _box + visualize_round)
+tests/test_pairing.py   38 tests (31 doubles + 7 singles)
+examples/demo.py        24-player / 5-round doubles demo (own _box + visualize_round)
+examples/demo_singles.py  24-player / 5-round singles demo (own _box + visualize_singles_round)
 SPEC.md                 Full specification
 README.md               This file — engineering deep-dive
 README_CLAUDE.md        Firebase / Firestore integration guide
 ```
+
+## Singles Mode
+
+Pass `mode="singles"` to `LeaguePairingManager` for head-to-head 1v1 matches (one match per table, 2 players). API mirrors doubles:
+
+```python
+mgr = LeaguePairingManager(roster, mode="singles")
+rnd = mgr.next_round(present_players)
+# Returns: {"round": 1, "matches": [("Alice","Bob"), ...], "tables": [...], "bye": []}
+```
+
+- Table capacity: 2 players per table (1 match).
+- Default `num_tables`: `len(present) // 2`.
+- No-repeat opponents instead of no-repeat teammates.
+- All state persistence (`get_state`/`set_state`/`save`/`load`) works identically.
 
 ## Tests
 
