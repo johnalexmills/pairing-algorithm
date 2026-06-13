@@ -246,7 +246,7 @@ SPEC.md                  Full specification
 ## Tests
 
 ```bash
-python3 tests/test_pairing.py
+python3 -m pytest tests/
 ```
 
 Core engine has zero external dependencies. Firebase integration adds `firebase-admin` only.

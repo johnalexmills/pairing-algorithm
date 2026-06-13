@@ -131,3 +131,9 @@ SPEC.md                 Full specification
 README.md               This file — engineering deep-dive
 README_CLAUDE.md        Firebase / Firestore integration guide
 ```
+
+## Tests
+
+```bash
+python3 -m pytest tests/
+```
