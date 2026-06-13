@@ -1,6 +1,20 @@
 # Crokinole Pairing Algorithm — Specification
 
-## 1. Purpose
+## 1. Capacity
+
+| Metric | Min | Typical | Max | Note |
+|--------|-----|---------|-----|------|
+| Present per round | 2 | 8–32 | ~100 | Blossom O(n³) bottleneck |
+| Roster players | 2 | 8–50 | unlimited | Only pair tracking, not matching |
+| Teams per round | 1 | 2–8 | `num_tables × 2` | |
+| Tables per round | 1 | 2–6 | present // 4 | Default: `max(1, len(present)//4)` |
+| Rounds (single night) | 1 | 3–6 | indefinite | |
+
+`num_tables` default is `max(1, len(present) // 4)`. Players beyond `num_tables × 2` teams sit out (bye).
+
+Benchmarked: 100 present → 31ms/round (fresh graph), 411ms/round (sparse graph, 14x slower). 400 present → 5.4s/round (fresh graph only). Sparse worst-case ceiling ~120 present for 5s budget. Realistic league use (8-32 present) instant regardless of season stage. Roster size >1000 has no meaningful impact.
+
+## 2. Purpose
 
 Generate fair, no-repeat pairings for a recurring crokinole league. Two modes:
 
@@ -155,10 +169,11 @@ File: user-specified path (default: none). JSON format:
 
 ## 8. Performance Bounds
 
-| Parameter | Bound |
-|-----------|-------|
-| Roster size | No explicit limit. Blossom is O(VE²) in worst case. Tested at 50. |
-| Present per round | No explicit limit. Table capacity provides natural bound. |
+| Parameter | Bound | Note |
+|-----------|-------|------|
+| Roster size | unlimited | Blossom runs on present subset only; 50 tested, 500 validated |
+| Present per round (fresh graph) | ~395 | Bottleneck is blossom O(n³); tested at 32-500 |
+| Present per round (sparse graph) | ~120 | Sparse 14x slower due to blossom contractions |
 | Rounds | Indefinite. Cycle reset prevents unbounded used-pair growth. |
 | Iterations for table assignment | 1 (greedy is provably optimal at default `num_tables = present/4`). O(N²) per table. |
 

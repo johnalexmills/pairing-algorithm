@@ -1,5 +1,35 @@
 # Crokinole Pairing Algorithm — Engineering Guide
 
+## Capacity
+
+| Metric | Min | Typical | Max | Limit Factor |
+|--------|-----|---------|-----|-------------|
+| Present per round | 2 | 8–32 | ~100 | Blossom O(n³) time |
+| Roster players | 2 | 8–50 | unlimited | Only pair tracking, not matching |
+| Teams per round | 1 | 2–8 | `num_tables × 2` | Table count |
+| Tables per round | 1 | 2–6 | present // 4 | Default: `max(1, len(present)//4)` |
+| Rounds (single night) | 1 | 3–6 | indefinite | Cycle reset prevents exhaustion |
+
+**Key formulas:**
+- `teams = min(num_tables × 2, present // 2)`
+- Players beyond `num_tables × 2` teams sit out (bye)
+- Cycle reset at `n(n-1)/2` used pairs
+
+**Benchmarked performance (present players per round):**
+
+| Present | Fresh graph (early season) | Sparse graph (late season) | Experience |
+|---------|---------------------------|---------------------------|------------|
+| 32 | 1ms | 8ms | Instant |
+| 50 | 3ms | 27ms | Instant |
+| 100 | 31ms | 411ms | Perceptible in late season |
+| 200 | 367ms | — | Fine |
+| 300 | 1.7s | — | Acceptable |
+| 400 | 5.4s | — | Pushing it |
+
+Sparse (late season) is 10-14x slower than fresh graph — odd cycles force blossom contractions. Worst-case ceiling: ~120 present for 5s budget. Realistic league use (8-32 present) is instant regardless of season stage.
+
+Roster size (>1000) has no meaningful impact — bottleneck is present players passed to blossom matching, not total roster size.
+
 ## Problem
 
 A crokinole league night has 8–50 players. Each round, players pair into teams of 2; two teams sit at one table (4 players). Over multiple rounds and nights, no two players should repeat as teammates until all possible pairings are exhausted. Attendance varies night to night. Players should also not share a table with the same opponents in consecutive rounds.

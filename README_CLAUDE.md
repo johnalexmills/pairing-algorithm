@@ -2,6 +2,18 @@
 
 Drop-in pairing engine for crokinole league apps running on Firebase. No-repeat teammates across nights, real-time sync via Firestore, variable attendance.
 
+## Capacity
+
+| Metric | Min | Typical | Max | Note |
+|--------|-----|---------|-----|------|
+| Present per round | 2 | 8–32 | ~400 (fresh graph) / ~120 (sparse) | Blossom O(n³) bottleneck; sparse ~14x slower |
+| Roster players | 2 | 8–50 | unlimited | No impact on match speed |
+| Teams per round | 1 | 2–8 | `num_tables × 2` | |
+| Tables per round | 1 | 2–6 | present // 4 | Default: `max(1, len(present)//4)` |
+| Rounds per night | 1 | 3–6 | indefinite | |
+
+Players beyond `num_tables × 2` teams sit out (bye).
+
 ## Architecture
 
 ```
