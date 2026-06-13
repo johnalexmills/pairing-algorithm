@@ -1,145 +1,222 @@
-# Crokinole Pairing Algorithm — Integration Guide
+# Crokinole Pairing Algorithm — Firebase Integration
 
-Drop-in pairing engine for crokinole league apps. Avoids teammate repeats across nights, minimizes table-neighbor repeats across rounds, handles variable attendance.
+Drop-in pairing engine for crokinole league apps running on Firebase. No-repeat teammates across nights, real-time sync via Firestore, variable attendance.
 
-## Quick Start
-
-```python
-from pairing import LeaguePairingManager
-
-mgr = LeaguePairingManager(
-    ["Alice", "Bob", "Carol", "Dave", "Eve", "Frank", "Grace", "Henry"],
-    state_path="league_state.json"
-)
-
-rnd = mgr.next_round(["Alice","Bob","Carol","Dave","Eve","Frank","Grace","Henry"])
-
-rnd["teams"]    # [(Alice,Bob), (Carol,Dave), (Eve,Frank), (Grace,Henry)]
-rnd["tables"]   # [(1, (Alice,Bob), (Carol,Dave)), (2, (Eve,Frank), (Grace,Henry))]
-rnd["bye"]      # players sitting out
-```
-
-Run demo: `python3 demo.py`
-
-## API
-
-### `LeaguePairingManager(all_players, state_path=None)`
-
-**`next_round(present, num_tables=None)` → dict**
-
-| Key | Type | Description |
-|-----|------|-------------|
-| `round` | `int` | 1-based counter |
-| `teams` | `[(str,str)]` | Teams formed |
-| `tables` | `[(int, tuple\|None, tuple\|None)]` | (table#, team1, team2) per table |
-| `bye` | `[str]` | Players sitting out |
-
-`num_tables` defaults to `max(1, len(present) // 4)`. Max teams = `num_tables * 2`.
-
-**`generate_night(present, num_rounds, num_tables=None)` → list[dict]**
-
-**`save()`** — Persist state to JSON.
-
-**`reset()`** — Clear all history (new season).
-
-## App Lifecycle
+## Architecture
 
 ```
-App launch → Create LeaguePairingManager(roster, state_path)
-  ↓
-Night starts → mgr.next_round(present) for each round
-  ↓
-Assign tables → use rnd["tables"]: (table#, team1, team2)
-  ↓
-Night ends → mgr.save()
+┌──────────────────────┐       ┌──────────────────────┐
+│  Admin Phone         │       │  Viewer Phone        │
+│  generates pairings  │       │  displays pairings   │
+│         │            │       │         ▲            │
+│         ▼            │       │         │            │
+│  LeaguePairingManager│       │  on_snapshot( )      │
+│         │            │       │         │            │
+│         ▼            │       │         │            │
+│  FirestoreAdapter    │       │  FirestoreAdapter    │
+│  writes state+round  │       │  listens for changes │
+└────────┬─────────────┘       └─────────┬────────────┘
+         │                               │
+         └───────────────┬───────────────┘
+                         ▼
+                 ┌───────────────┐
+                 │   Firestore   │
+                 │  /leagues/    │
+                 │  {leagueId}/  │
+                 │   state       │
+                 │   rounds/{n}  │
+                 └───────────────┘
 ```
 
-## Cloud State Persistence
+Only one device generates pairings (admin). All others subscribe to Firestore and display updates in real time.
 
-State is a small JSON blob (~few KB). Read on launch, write on save. Two options:
+## Firestore Data Model
 
-### Option 1: Cloud Storage (GCS) — Simplest
+```
+leagues/{leagueId}/
+  state: {
+    used_pairs: [["Alice","Bob"], ...],
+    last_table_rosters: [
+      [["Alice","Bob","Carol","Dave"], ["Eve","Frank","Grace","Henry"]],
+      ...
+    ],
+    player_last_table: {"Alice": 1, "Bob": 2, ...},
+    round_count: 5,
+    present: ["Alice","Bob","Carol","Dave","Eve","Frank","Grace","Henry"],
+    num_tables: 2,
+    updated_at: Timestamp
+  }
 
-```python
-from google.cloud import storage
-from pairing import LeaguePairingManager
-
-BUCKET = "croke-league-state"
-BLOB = "league_state.json"
-
-class CloudPairingManager(LeaguePairingManager):
-    def __init__(self, roster):
-        self.client = storage.Client()
-        self.bucket = self.client.bucket(BUCKET)
-        self.blob = self.bucket.blob(BLOB)
-        tmp = "/tmp/league_state.json"
-        if self.blob.exists():
-            self.blob.download_to_filename(tmp)
-        super().__init__(roster, state_path=tmp)
-
-    def save(self):
-        super().save()
-        self.blob.upload_from_filename(self.state_path)
+  rounds/{round_number}/
+    teams: [["Alice","Bob"], ["Carol","Dave"]],
+    tables: [
+      [1, ["Alice","Bob"], ["Carol","Dave"]],
+      [2, ["Eve","Frank"], ["Grace","Henry"]]
+    ],
+    bye: [],
+    created_at: Timestamp
+  }
 ```
 
-**Pricing:** ~$0.02/month. Ops: zero. State defaults to `STANDARD` storage class.
-
-**Setup:** Enable Cloud Storage API, create bucket, grant `storage.objectUser` role to app service account.
-
-**iOS:** Use Firebase Admin SDK or a Cloud Function wrapper if the app can't call GCS directly (iOS). Pattern: Cloud Function receives state, writes to GCS bucket.
-
-### Option 2: Firestore — If app needs multi-device sync
+## Firebase Adapter
 
 ```python
 import firebase_admin
 from firebase_admin import credentials, firestore
 from pairing import LeaguePairingManager
 
-db = firestore.client()
-DOC_REF = db.collection("leagues").document("state")
 
-class FirestorePairingManager(LeaguePairingManager):
-    def __init__(self, roster):
-        doc = DOC_REF.get()
-        tmp = "/tmp/league_state.json"
+class FirebasePairingManager:
+    """Wraps LeaguePairingManager with Firestore sync.
+
+    Zero local files.  State loads from Firestore on init,
+    pushes to Firestore after each round.
+    Round results stored as separate documents for history.
+    """
+
+    def __init__(self, roster, league_id, cred_path=None):
+        if not firebase_admin._apps:
+            cred = credentials.Certificate(cred_path) if cred_path else None
+            firebase_admin.initialize_app(cred)
+
+        self.db = firestore.client()
+        self.state_ref = self.db.collection("leagues").document(league_id)
+        self.rounds_ref = self.state_ref.collection("rounds")
+
+        self._mgr = LeaguePairingManager(roster, state_path=None)
+
+        doc = self.state_ref.get()
         if doc.exists:
-            import json
-            with open(tmp, "w") as f:
-                json.dump(doc.to_dict(), f)
-        super().__init__(roster, state_path=tmp)
+            self._mgr.set_state(doc.to_dict())
 
-    def save(self):
-        super().save()
-        import json
-        with open(self.state_path) as f:
-            DOC_REF.set(json.load(f))
+    def next_round(self, present_players, num_tables=None):
+        rnd = self._mgr.next_round(present_players, num_tables)
+        self._push_to_firestore(rnd, present_players, num_tables)
+        return rnd
+
+    def generate_night(self, present_players, num_rounds, num_tables=None):
+        rounds = self._mgr.generate_night(present_players, num_rounds, num_tables)
+        for rnd in rounds:
+            self._push_to_firestore(rnd, present_players, num_tables)
+        return rounds
+
+    def reset(self):
+        self._mgr.reset()
+        self.state_ref.delete()
+        for doc in self.rounds_ref.stream():
+            doc.reference.delete()
+
+    def _push_to_firestore(self, rnd, present, num_tables):
+        self.rounds_ref.document(str(rnd["round"])).set({
+            "teams": [list(t) for t in rnd["teams"]],
+            "tables": [
+                [tn,
+                 list(t1) if t1 else None,
+                 list(t2) if t2 else None]
+                for tn, t1, t2 in rnd["tables"]
+            ],
+            "bye": rnd["bye"],
+            "created_at": firestore.SERVER_TIMESTAMP,
+        })
+
+        state = self._mgr.get_state()
+        state["present"] = present
+        state["num_tables"] = num_tables or max(1, len(present) // 4)
+        state["updated_at"] = firestore.SERVER_TIMESTAMP
+        self.state_ref.set(state)
 ```
 
-**Use when:** Two phones need to share pairings simultaneously (e.g., league admin + scorekeeper). Firestore's real-time sync means a save from one device appears instantly on another.
+## App Lifecycle
 
-**Pricing:** ~$0.03/month at this data size.
-
-### Option 3: Cloud SQL — Not recommended
-
-Overkill. The state is a single flat JSON document, not relational data.
-
-## Variable Attendance
-
-Players who don't attend don't affect the state. Their used pairs persist; when they return, the algorithm avoids those pairs.
+### Admin device (generates pairings)
 
 ```python
-roster = [f"P{i}" for i in range(50)]
-mgr = LeaguePairingManager(roster, "league.json")
+roster = ["Alice","Bob","Carol","Dave","Eve","Frank","Grace","Henry"]
+mgr = FirebasePairingManager(roster, league_id="summer-league-2026")
 
-nights = [
-    ["P0","P1","P2","P3","P4","P5","P6","P7","P8","P9",
-     "P10","P11","P12","P13","P14","P15","P16","P17","P18","P19"],
-    ["P0","P1","P2","P3","P4","P15","P16","P17","P18","P19",
-     "P20","P21","P22","P23","P24","P25","P26","P27","P28","P29"],
-]
-for i, present in enumerate(nights):
-    rounds = mgr.generate_night(present, 5)
-    mgr.save()
+# Each round
+rnd = mgr.next_round(present_players)
+# Round immediately available in Firestore for all devices
+```
+
+### Viewer devices (read-only)
+
+```python
+import firebase_admin
+from firebase_admin import firestore
+
+db = firestore.client()
+state_ref = db.collection("leagues").document("summer-league-2026")
+
+def on_round_update(doc_snapshot, changes, read_time):
+    data = doc_snapshot[0].to_dict() if doc_snapshot else None
+    if not data:
+        return
+    print(f"Round {data['round_count']}")
+    print(f"Teams: {data['teams']}")  # Display in UI
+    print(f"Tables: {data['tables']}")
+
+state_ref.collection("rounds").on_snapshot(on_round_update)
+```
+
+Or subscribe to the `state` document directly:
+
+```python
+def on_state_change(doc_snapshot, changes, read_time):
+    data = doc_snapshot[0].to_dict() if doc_snapshot else None
+    if data:
+        current_round = data["round_count"]
+        # Fetch latest round document
+        round_doc = state_ref.collection("rounds").document(
+            str(current_round)
+        ).get()
+        if round_doc.exists:
+            display_round(round_doc.to_dict())
+
+state_ref.on_snapshot(on_state_change)
+```
+
+## Concurrency Safety
+
+If two admin devices could generate rounds simultaneously, use a Firestore transaction:
+
+```python
+from google.cloud.firestore import transactional
+
+@transactional
+def generate_round_transaction(transaction, state_ref, mgr, present):
+    snapshot = state_ref.get(transaction=transaction)
+    if not snapshot.exists:
+        return None
+    # The round_count check ensures no double-generation
+    mgr._mgr.round_count = snapshot.get("round_count")
+    mgr._mgr.used_pairs = {tuple(p) for p in snapshot.get("used_pairs", [])}
+    # ... load full state ...
+    rnd = mgr._mgr.next_round(present)
+    mgr._push_to_firestore(rnd, present, None)
+    return rnd
+```
+
+For most leagues, a single admin device is sufficient. Transactions only needed if multiple phones could generate simultaneously.
+
+## Usage
+
+```python
+# One admin generates
+mgr = FirebasePairingManager(roster, league_id="league-1")
+
+# Results pushed to Firestore automatically
+round1 = mgr.next_round(["Alice","Bob","Carol","Dave"])
+round2 = mgr.next_round(["Alice","Bob","Carol","Dave"])
+
+# Or generate a full night
+night = mgr.generate_night(["Alice","Bob","Carol","Dave"], 5)
+```
+
+## Requirements
+
+```
+pip install firebase-admin
 ```
 
 ## Constraints
@@ -155,17 +232,13 @@ for i, present in enumerate(nights):
 ## File Structure
 
 ```
-pairing.py               Core engine
+pairing.py               Core engine (no Firebase dependency)
 test_pairing.py          30 tests
 demo.py                  24-player / 5-round demo
-README.md                This file
-README_ENGINEERS.md      Algorithm deep-dive for engineering review
+README_CLAUDE.md         This file
+README.md                Algorithm deep-dive for engineers
 SPEC.md                  Full specification
 ```
-
-## Algorithm
-
-See `README_ENGINEERS.md` for: blossom matching detail, optimality proof, constraint analysis, edge case handling.
 
 ## Tests
 
@@ -173,4 +246,4 @@ See `README_ENGINEERS.md` for: blossom matching detail, optimality proof, constr
 python3 test_pairing.py
 ```
 
-No external dependencies (stdlib only).
+Core engine has zero external dependencies. Firebase integration adds `firebase-admin` only.

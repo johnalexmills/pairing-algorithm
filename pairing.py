@@ -160,12 +160,34 @@ class LeaguePairingManager:
         with open(self.state_path, "w") as f:
             json.dump(data, f, indent=2)
 
+    def get_state(self):
+        return {
+            "used_pairs": [list(p) for p in sorted(self.used_pairs)],
+            "last_table_rosters": [
+                [list(t) for t in r] for r in self.last_table_rosters
+            ],
+            "player_last_table": dict(self.player_last_table),
+            "round_count": self.round_count,
+        }
+
+    def set_state(self, data):
+        self.used_pairs = {tuple(p) for p in data.get("used_pairs", [])}
+        self.last_table_rosters = [
+            [{str(q) for q in t} for t in r]
+            for r in data.get("last_table_rosters", [])
+        ]
+        self.player_last_table = {
+            str(k): v for k, v in data.get("player_last_table", {}).items()
+        }
+        self.round_count = data.get("round_count", 0)
+
     def reset(self):
         self.used_pairs = set()
         self.last_table_rosters = []
         self.player_last_table = {}
         self.round_count = 0
-        self.save()
+        if self.state_path:
+            self.save()
 
     # ── Team matching ──
 
