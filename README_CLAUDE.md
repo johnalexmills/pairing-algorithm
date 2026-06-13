@@ -72,6 +72,9 @@ class FirebasePairingManager:
     Zero local files.  State loads from Firestore on init,
     pushes to Firestore after each round.
     Round results stored as separate documents for history.
+
+    Performance: Greedy table assignment proven optimal with default
+    `num_tables = len(present) // 4`. Only 1 iteration needed.
     """
 
     def __init__(self, roster, league_id, cred_path=None):
