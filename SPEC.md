@@ -41,7 +41,7 @@ None. Table assignment is purely best-effort optimization.
 
 ### 3.4 Table Assignment — Soft Preferences
 
-1. **Back-to-back avoidance**: A set of players who shared a table in round `R-1` should not share a table in round `R`. Weight: 100 penalty per repeat pair.
+1. **Back-to-back avoidance**: A set of players who shared a table in any prior round should not share a table again. Weight: 100 penalty per repeat pair across all prior rounds.
 2. **Table number rotation**: Players should not sit at the same table number in consecutive rounds. Weight: 1 penalty per player who repeats a table number.
 
 ### 3.5 Persistence (`LeaguePairingManager` only)
@@ -50,7 +50,7 @@ None. Table assignment is purely best-effort optimization.
 2. **Saved fields**: `used_pairs`, `last_table_rosters`, `player_last_table`, `round_count`.
 3. **On load**: Restore exact state so next round respects prior pairings.
 4. **On reset**: Clear all state (used pairs, history, table tracking) and persist empty state.
-5. **`last_table_rosters`**: Keep at most 2 most recent rounds.
+5. **`last_table_rosters`**: Keep all prior rounds — prevents ping-pong repeats (e.g. Alice & Carol alternating table shares).
 
 ## 4. API Surface
 
@@ -78,6 +78,8 @@ None. Table assignment is purely best-effort optimization.
 | `next_round(present_players, num_tables)` | `(list, int | None) -> dict` | `{round, teams, tables, bye}` |
 | `generate_night(present_players, num_rounds, num_tables)` | `(list, int, int | None) -> list[dict]` | Multiple rounds |
 | `save()` | `() -> None` | Persist to JSON |
+| `get_state()` | `() -> dict` | Serialize state for external persistence (Firebase, etc.) |
+| `set_state(data)` | `(dict) -> None` | Restore state from dict (no file needed) |
 | `reset()` | `() -> None` | Clear state + persist |
 | `get_pair_stats()` | `() -> dict[pair, count]` | Pair frequencies |
 | `get_table_pair_stats()` | `() -> dict[pair, count]` | Table-neighbor frequencies |
@@ -122,8 +124,8 @@ Stateless quick-assign (no tracking). Used by `RoundRobinPairing`.
 
 1. Greedy per-table: for each table 1..N, exhaustively evaluate all remaining team pairs (O(k²)) and pick minimizing `conflict_score`.
 2. `conflict_score = back_to_back_conflicts * 100 + table_repeat_penalty * 1`.
-3. 10 random restarts for tiebreak exploration. With realistic parameters (`num_tables = len(present) // 4`), greedy provably optimal — 0 failures across 2000 brute-force trials.
-4. Tiebreak-only suboptimality (1-2 table-repeat points) can occur with artificially inflated `num_tables`, but this is unused in practice.
+3. Only 1 iteration needed. With realistic parameters (`num_tables = len(present) // 4`), greedy is provably optimal — 0 failures across 2000 brute-force trials. The cost function is separable per table (matroid structure), so greedy at default `num_tables` is deterministic and optimal.
+4. Tiebreak-only suboptimality (1-2 table-repeat points) can occur with artificially inflated `num_tables` (> present/4), but this is unused in practice.
 
 ## 6. State Persistence Schema
 
@@ -161,7 +163,7 @@ File: user-specified path (default: none). JSON format:
 | Roster size | No explicit limit. Blossom is O(VE²) in worst case. Tested at 50. |
 | Present per round | No explicit limit. Table capacity provides natural bound. |
 | Rounds | Indefinite. Cycle reset prevents unbounded used-pair growth. |
-| Iterations for table assignment | 10 random restarts (tiebreak exploration only; greedy is optimal with realistic params). O(N²) per restart. |
+| Iterations for table assignment | 1 (greedy is provably optimal at default `num_tables = present/4`). O(N²) per table. |
 
 ## 9. Test Coverage Requirements
 
@@ -178,7 +180,10 @@ Each spec item should map to at least one test. Current test coverage:
 - **Large roster**: `test_mgr_large_roster_small_night`
 - **Table constraints**: `test_mgr_tables_in_return`, `test_mgr_table_rotation`, `test_mgr_table_back_to_back`
 - **Overflow**: `test_mgr_table_overflow_players_sit`
-- **Stateless table assignment**: `test_assign_tables`, `test_table_assignment_with_pairing`
+- **Stateless table assignment**: `test_assign_tables`, `test_table_assignment_with_pairing` (in `tests/test_pairing.py`)
 - **Blossom correctness**: Implicit in all `LeaguePairingManager` tests; explicit near-exhaustion in `test_mgr_no_repeats_across_rounds`
 - **Assignment determinism**: `test_assign_tables_deterministic` — same score across calls signals iteration count is sufficient
 - **One-iteration proof**: `test_assign_tables_one_iter_sufficient` — full tie space (empty history), 20 trials all score 0, proving 1 iteration finds optimum
+- **Deterministic assignment**: `test_assign_tables_deterministic` — same score across calls signals iteration count is sufficient
+
+All tests in `tests/test_pairing.py`.

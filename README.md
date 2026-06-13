@@ -88,7 +88,7 @@ State is loaded at construction (if `state_path` exists and readable), saved via
 
 ### Persistence across devices (Cloud)
 
-See companion `README.md` for Cloud Storage / Firestore integration.
+See `README_CLAUDE.md` for Firebase / Firestore integration.
 
 ## Performance
 
@@ -124,10 +124,10 @@ Tested at 50-player roster, 20 present, 5 rounds — completes in < 1s.
 ## File Structure
 
 ```
-pairing.py              Core: RoundRobinPairing, LeaguePairingManager, visualize_round
-test_pairing.py         30 tests
-demo.py                 24-player / 5-round demo
+pairing.py              Core: RoundRobinPairing, LeaguePairingManager
+tests/test_pairing.py   30 tests
+examples/demo.py        24-player / 5-round demo (own _box + visualize_round)
 SPEC.md                 Full specification
-README_ENGINEERS.md     This file
-README.md               Integration guide + Cloud services
+README.md               This file — engineering deep-dive
+README_CLAUDE.md        Firebase / Firestore integration guide
 ```

@@ -3,7 +3,10 @@
 Uses fake players and tracks all pair outcomes.
 """
 import os
+import sys
 import tempfile
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from pairing import RoundRobinPairing, LeaguePairingManager, assign_tables
 from collections import Counter

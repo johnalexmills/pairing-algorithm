@@ -236,8 +236,8 @@ pip install firebase-admin
 
 ```
 pairing.py               Core engine (no Firebase dependency)
-test_pairing.py          30 tests
-demo.py                  24-player / 5-round demo
+tests/test_pairing.py    30 tests
+examples/demo.py         24-player / 5-round demo
 README_CLAUDE.md         This file
 README.md                Algorithm deep-dive for engineers
 SPEC.md                  Full specification
@@ -246,7 +246,7 @@ SPEC.md                  Full specification
 ## Tests
 
 ```bash
-python3 test_pairing.py
+python3 tests/test_pairing.py
 ```
 
 Core engine has zero external dependencies. Firebase integration adds `firebase-admin` only.
