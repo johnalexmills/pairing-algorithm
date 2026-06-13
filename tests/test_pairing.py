@@ -3,10 +3,7 @@
 Uses fake players and tracks all pair outcomes.
 """
 import os
-import sys
 import tempfile
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from pairing import RoundRobinPairing, LeaguePairingManager, assign_tables
 from collections import Counter
@@ -266,7 +263,7 @@ def test_mgr_consistent_player_no_repeats():
 
     # Simulate 4 nights, A and B present every night
     # Others rotate
-    for night in range(4):
+    for _ in range(4):
         others = [p for p in roster if p not in ("A", "B")]
         import random
         random.shuffle(others)
@@ -604,45 +601,4 @@ def test_table_assignment_with_pairing():
     print("  table assignment integration OK")
 
 
-if __name__ == "__main__":
-    tests = [
-        # RoundRobinPairing tests
-        test_single_player,
-        test_two_players,
-        test_even_players,
-        test_odd_players,
-        test_no_repeats_within_cycle,
-        test_bye_rotation,
-        test_seven_players_seven_rounds,
-        test_ten_players_twenty_rounds,
-        test_long_running_no_repeats,
-        test_cycle_reset,
-        test_16_players,
-        # LeaguePairingManager tests
-        test_mgr_basic,
-        test_mgr_odd_subset,
-        test_mgr_no_repeats_across_rounds,
-        test_mgr_variable_attendance,
-        test_mgr_consistent_player_no_repeats,
-        test_mgr_save_load,
-        test_mgr_reset,
-        test_mgr_large_roster_small_night,
-        test_mgr_no_repeats_across_nights,
-        test_mgr_single_present_player,
-        # Table constraint tests
-        test_mgr_tables_in_return,
-        test_mgr_table_rotation,
-        test_mgr_table_back_to_back,
-        test_mgr_table_rosters_tracked,
-        test_mgr_table_overflow_players_sit,
-        # Stateless table assignment
-        test_assign_tables_one_iter_sufficient,
-        test_assign_tables_deterministic,
-        test_assign_tables,
-        test_table_assignment_with_pairing,
-    ]
 
-    for test in tests:
-        test()
-
-    print("\nAll tests passed.")

@@ -56,7 +56,7 @@ class RoundRobinPairing:
         if self.n < 2:
             return None
 
-        if len(self.used_pairs) >= self.total_pairs and self.total_pairs > 0:
+        if len(self.used_pairs) >= self.total_pairs:
             self.used_pairs = set()
             random.shuffle(self.players)
 
@@ -88,15 +88,6 @@ class RoundRobinPairing:
                 stats[key] = stats.get(key, 0) + 1
         return stats
 
-    def get_player_pair_counts(self, player):
-        counts = {}
-        for rnd in self.history:
-            for a, b in rnd["teams"]:
-                if a == player:
-                    counts[b] = counts.get(b, 0) + 1
-                elif b == player:
-                    counts[a] = counts.get(a, 0) + 1
-        return counts
 
 
 class LeaguePairingManager:
@@ -206,8 +197,6 @@ class LeaguePairingManager:
         n = len(players)
         if n < 2:
             return [], list(players)
-
-        target = min(n // 2, max_teams) if max_teams else n // 2
 
         used = self.used_pairs
 
@@ -442,23 +431,6 @@ class LeaguePairingManager:
             self.next_round(present_players, num_tables)
             for _ in range(num_rounds)
         ]
-
-    def get_pair_stats(self):
-        stats = {}
-        for p in self.used_pairs:
-            stats[p] = stats.get(p, 0) + 1
-        return stats
-
-    def get_table_pair_stats(self):
-        stats = {}
-        for roster in self.last_table_rosters:
-            for table_set in roster:
-                players = list(table_set)
-                for i, a in enumerate(players):
-                    for b in players[i + 1:]:
-                        key = _pair_key(a, b)
-                        stats[key] = stats.get(key, 0) + 1
-        return stats
 
     def get_player_pair_counts(self, player):
         counts = {}
