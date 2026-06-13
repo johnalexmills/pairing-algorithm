@@ -95,14 +95,23 @@ class LeaguePairingManager:
 
     Tracks both team-level and table-level pairings.
     Persists state across sessions via JSON file.
+    Supports doubles (2 teams per table) and singles (1 match per table).
 
     Usage:
         mgr = LeaguePairingManager(roster, "state.json")
         r1 = mgr.next_round(["Alice","Bob","Carol","Dave"], num_tables=1)
-        r2 = mgr.next_round(["Alice","Bob","Carol","Dave"], num_tables=1)
+
+        # Singles mode
+        mgr2 = LeaguePairingManager(roster, mode="singles")
+        r = mgr2.next_round(["Alice","Bob","Carol","Dave"], num_tables=2)
+        # Returns: {"round": 1, "matches": [("Alice","Bob"), ...], "tables": [...], "bye": []}
+
+        # Singles
+        mgr = LeaguePairingManager(roster, mode="singles")
+        r1 = mgr.next_round(["Alice","Bob","Carol","Dave"], num_tables=2)
     """
 
-    def __init__(self, all_players, state_path=None):
+    def __init__(self, all_players, state_path=None, mode="doubles"):
         self.all_players = sorted(all_players)
         self.used_pairs = set()
         self.last_table_rosters = []
@@ -111,6 +120,7 @@ class LeaguePairingManager:
         n = len(self.all_players)
         self.total_possible = n * (n - 1) // 2
         self.state_path = state_path
+        self.mode = mode
         if state_path and os.path.exists(state_path):
             self._load()
 
@@ -140,14 +150,8 @@ class LeaguePairingManager:
         if not self.state_path:
             return
         os.makedirs(os.path.dirname(self.state_path) or ".", exist_ok=True)
-        data = {
-            "used_pairs": [list(p) for p in sorted(self.used_pairs)],
-            "last_table_rosters": [
-                [list(t) for t in r] for r in self.last_table_rosters
-            ],
-            "player_last_table": dict(self.player_last_table),
-            "round_count": self.round_count,
-        }
+        data = self.get_state()
+        data["mode"] = self.mode
         with open(self.state_path, "w") as f:
             json.dump(data, f, indent=2)
 
@@ -159,6 +163,7 @@ class LeaguePairingManager:
             ],
             "player_last_table": dict(self.player_last_table),
             "round_count": self.round_count,
+            "mode": self.mode,
         }
 
     def set_state(self, data):
@@ -320,30 +325,45 @@ class LeaguePairingManager:
                             break
         return conflicts
 
-    def _assign_tables(self, teams, num_tables):
-        """Assign teams to tables avoiding back-to-back repeats.
+    def _assign_tables(self, items, num_tables, mode="doubles"):
+        """Assign teams (doubles) or matches (singles) to tables.
 
-        Greedy per-table: pick best remaining pair for each table
-        (exhaustive over all pairs).  Multiple random restarts for
-        tiebreak exploration (only significant with non-default
-        num_tables < len(present) // 4).
+        Doubles: pick best remaining team-pair per table (4 players).
+        Singles: assign each match to a table (2 players).
 
-        Returns list of (table_num, team1, team2).
+        Returns list of (table_num, item1|None, item2|None).
         """
-        m = len(teams)
+        m = len(items)
         if m == 0:
             return [(i + 1, None, None) for i in range(num_tables)]
 
-        def _table_score(team_indices, tn):
+        def _table_score(item_indices, tn):
             players = []
-            for ti in team_indices:
-                players.extend(teams[ti])
+            for ii in item_indices:
+                players.extend(items[ii])
             c = self._table_conflict(players) * 100
             t = 1 if any(
                 self.player_last_table.get(p) == tn for p in players
             ) else 0
             return c + t
 
+        if mode == "singles":
+            # Each table holds one match (2 players).
+            # Greedy: assign highest-conflict match first for fairness.
+            scored = [
+                (i, _table_score([i], tn))
+                for tn, i in enumerate(range(m))
+            ]
+            scored.sort(key=lambda x: -x[1])  # worst first
+            assigned = []
+            for idx, (match_idx, _) in enumerate(scored):
+                tn = idx + 1
+                assigned.append((tn, items[match_idx], None))
+            for tn in range(len(assigned) + 1, num_tables + 1):
+                assigned.append((tn, None, None))
+            return assigned
+
+        # Doubles: pick best remaining team-pair per table (4 players).
         remaining = set(range(m))
         assigned = []
 
@@ -364,52 +384,65 @@ class LeaguePairingManager:
                         if s < bp_score:
                             bp_score = s
                             bp = (rlist[i], rlist[j])
-                assigned.append((tn, teams[bp[0]], teams[bp[1]]))
+                assigned.append((tn, items[bp[0]], items[bp[1]]))
                 remaining.remove(bp[0])
                 remaining.remove(bp[1])
             else:
                 solo = next(iter(remaining))
-                assigned.append((tn, teams[solo], None))
+                assigned.append((tn, items[solo], None))
                 remaining.remove(solo)
 
         return assigned
 
     # ── Main API ──
 
-    def next_round(self, present_players, num_tables=None):
+    def next_round(self, present_players, num_tables=None, mode=None):
         """Generate next round for given present players.
 
         Args:
             present_players: list of player names present this round.
-            num_tables: number of tables. Defaults to len(present) // 4.
+            num_tables: number of tables.
+                Doubles defaults to len(present) // 4.
+                Singles defaults to len(present) // 2.
+            mode: "doubles" or "singles".  Falls back to
+                  self.mode set at construction.
 
-        Returns dict: {round, teams, tables, bye}
+        Returns dict:
+          Doubles: {round, teams, tables, bye}
+            Each table has 2 teams (4 players).
+            tables: [(tn, team_tuple|None, team_tuple|None)]
+          Singles: {round, matches, tables, bye}
+            Each table has 1 match (2 players).
+            tables: [(tn, (a,b)|None, None)]
         """
+        mode = mode or self.mode
         present = sorted(present_players)
+
         if num_tables is None:
-            num_tables = max(1, len(present) // 4)
+            denom = 2 if mode == "singles" else 4
+            num_tables = max(1, len(present) // denom)
 
         if self.total_possible > 0 and len(self.used_pairs) >= self.total_possible:
             self.used_pairs = set()
             random.shuffle(self.all_players)
 
         self.round_count += 1
-        max_teams = num_tables * 2
-        teams, unpaired = self._find_matching(present, max_teams)
+        max_teams = num_tables * (1 if mode == "singles" else 2)
+        pairs, unpaired = self._find_matching(present, max_teams)
 
-        for t in teams:
-            self.used_pairs.add(_pair_key(*t))
+        for p in pairs:
+            self.used_pairs.add(_pair_key(*p))
 
-        tables = self._assign_tables(teams, num_tables)
+        tables = self._assign_tables(pairs, num_tables, mode=mode)
 
         # Record table rosters for back-to-back avoidance
         roster = []
-        for tn, t1, t2 in tables:
+        for tn, m1, m2 in tables:
             players_at = set()
-            if t1 is not None:
-                players_at.update(t1)
-            if t2 is not None:
-                players_at.update(t2)
+            if m1 is not None:
+                players_at.update(m1)
+            if m2 is not None:
+                players_at.update(m2)
             roster.append(players_at)
             for p in players_at:
                 self.player_last_table[p] = tn
@@ -418,17 +451,21 @@ class LeaguePairingManager:
         if self.state_path:
             self.save()
 
-        return {
+        result = {
             "round": self.round_count,
-            "teams": teams,
             "tables": tables,
             "bye": unpaired,
         }
+        if mode == "singles":
+            result["matches"] = pairs
+        else:
+            result["teams"] = pairs
+        return result
 
-    def generate_night(self, present_players, num_rounds, num_tables=None):
+    def generate_night(self, present_players, num_rounds, num_tables=None, mode=None):
         """Generate multiple rounds for one league night."""
         return [
-            self.next_round(present_players, num_tables)
+            self.next_round(present_players, num_tables, mode=mode)
             for _ in range(num_rounds)
         ]
 
