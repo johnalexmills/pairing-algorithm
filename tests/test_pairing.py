@@ -601,4 +601,44 @@ def test_table_assignment_with_pairing():
     print("  table assignment integration OK")
 
 
+def test_large_scale():
+    """Validate algorithm at scale (200 present, 500 roster).
+
+    Fresh graph should complete in <2s.  This guards against
+    performance regressions in blossom matching.
+    """
+    roster = [f"P{i}" for i in range(500)]
+    mgr = LeaguePairingManager(roster)
+
+    full = roster[:200]
+    num_tables = len(full) // 4
+    max_teams = num_tables * 2
+
+    import time
+    t0 = time.perf_counter()
+    rnd = mgr.next_round(full, num_tables)
+    t1 = time.perf_counter()
+
+    assert t1 - t0 < 2.0, f"Fresh graph 200 present took {t1-t0:.2f}s (limit 2s)"
+
+    teams = rnd["teams"]
+    tables = rnd["tables"]
+    bye = rnd["bye"]
+
+    assert len(teams) == max_teams, f"Expected {max_teams} teams, got {len(teams)}"
+    assert len(tables) == num_tables, f"Expected {num_tables} tables, got {len(tables)}"
+    assert len(bye) == len(full) - max_teams * 2, (
+        f"Expected {len(full) - max_teams * 2} bye, got {len(bye)}"
+    )
+
+    seen = set()
+    for a, b in teams:
+        assert a != b, f"Self-pair {a}"
+        assert (a, b) not in seen and (b, a) not in seen, f"Duplicate team {a},{b}"
+        seen.add((a, b))
+
+    assert len(seen) == len(teams), "Duplicate teams found"
+    print(f"  large scale OK (200 present, {t1-t0:.3f}s)")
+
+
 
