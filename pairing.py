@@ -209,14 +209,14 @@ class LeaguePairingManager:
 
         target = min(n // 2, max_teams) if max_teams else n // 2
 
-        def _unused(a, b):
-            return _pair_key(a, b) not in self.used_pairs
+        used = self.used_pairs
 
         # Build adjacency: edge exists if pair not yet used
         adj = [[] for _ in range(n)]
         for i in range(n):
+            pi = players[i]
             for j in range(i + 1, n):
-                if _unused(players[i], players[j]):
+                if ((pi, players[j]) if pi < players[j] else (players[j], pi)) not in used:
                     adj[i].append(j)
                     adj[j].append(i)
 
@@ -355,49 +355,35 @@ class LeaguePairingManager:
             ) else 0
             return c + t
 
-        best = None
-        best_score = float("inf")
+        remaining = set(range(m))
+        assigned = []
 
-        for _ in range(10):
-            remaining = set(range(m))
-            assigned = []
-            total = 0
+        for tn in range(1, num_tables + 1):
+            if not remaining:
+                assigned.append((tn, None, None))
+                continue
+            rlist = list(remaining)
 
-            for tn in range(1, num_tables + 1):
-                if not remaining:
-                    assigned.append((tn, None, None))
-                    continue
-                rlist = list(remaining)
+            if len(remaining) >= 2:
+                bp = None
+                bp_score = float("inf")
+                for i in range(len(rlist)):
+                    for j in range(i + 1, len(rlist)):
+                        s = _table_score(
+                            [rlist[i], rlist[j]], tn
+                        )
+                        if s < bp_score:
+                            bp_score = s
+                            bp = (rlist[i], rlist[j])
+                assigned.append((tn, teams[bp[0]], teams[bp[1]]))
+                remaining.remove(bp[0])
+                remaining.remove(bp[1])
+            else:
+                solo = next(iter(remaining))
+                assigned.append((tn, teams[solo], None))
+                remaining.remove(solo)
 
-                if len(remaining) >= 2:
-                    bp = None
-                    bp_score = float("inf")
-                    for i in range(len(rlist)):
-                        for j in range(i + 1, len(rlist)):
-                            s = _table_score(
-                                [rlist[i], rlist[j]], tn
-                            )
-                            if s < bp_score:
-                                bp_score = s
-                                bp = (rlist[i], rlist[j])
-                    assigned.append((
-                        tn, teams[bp[0]], teams[bp[1]]
-                    ))
-                    total += bp_score
-                    remaining.remove(bp[0])
-                    remaining.remove(bp[1])
-                else:
-                    solo = next(iter(remaining))
-                    assigned.append((tn, teams[solo], None))
-                    remaining.remove(solo)
-
-            if total < best_score:
-                best_score = total
-                best = assigned
-                if total == 0:
-                    break
-
-        return best
+        return assigned
 
     # ── Main API ──
 
