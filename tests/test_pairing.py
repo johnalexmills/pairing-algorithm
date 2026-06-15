@@ -777,5 +777,71 @@ def test_singles_large_scale():
     print(f"  singles large scale OK (200 present, {t1-t0:.3f}s)")
 
 
+# ── Bye rotation tests ──
+
+def test_bye_rotation_doubles():
+    """Bye rotates so same player doesn't sit out multiple rounds."""
+    players = ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J"]
+    mgr = LeaguePairingManager(players)
+
+    byes = []
+    for _ in range(5):
+        rnd = mgr.next_round(players, num_tables=2)
+        byes.append(set(rnd["bye"]))
+
+    # Each round: 10 players, 2 tables → 4 teams → 8 players matched, 2 byes
+    assert all(len(b) == 2 for b in byes)
+
+    # No player should get a bye more than twice in 5 rounds
+    from collections import Counter
+    counts = Counter(p for b in byes for p in b)
+    assert all(c <= 2 for c in counts.values()), (
+        f"Player got bye {max(counts.values())} times: {counts}"
+    )
+    print("  bye rotation doubles OK")
+
+
+def test_bye_rotation_singles():
+    """Singles bye rotates so same player doesn't sit out multiple rounds."""
+    players = ["A", "B", "C", "D", "E"]
+    mgr = LeaguePairingManager(players, mode="singles")
+
+    byes = []
+    for _ in range(5):
+        rnd = mgr.next_round(players, num_tables=2)
+        byes.append(set(rnd["bye"]))
+
+    # Each round: 5 players, 2 tables → 2 matches → 4 players matched, 1 bye
+    assert all(len(b) == 1 for b in byes)
+
+    # No player should get a bye more than twice in 5 rounds
+    from collections import Counter
+    counts = Counter(p for b in byes for p in b)
+    assert all(c <= 2 for c in counts.values()), (
+        f"Player got bye {max(counts.values())} times: {counts}"
+    )
+    print("  bye rotation singles OK")
+
+
+def test_bye_rotation_generate_night():
+    """generate_night resets bye counts so rotation works across multiple nights."""
+    players = ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J"]
+    mgr = LeaguePairingManager(players)
+
+    # Night 1: 5 rounds, 2 tables
+    night1 = mgr.generate_night(players, 5, num_tables=2)
+    night1_byes = Counter(p for rnd in night1 for p in rnd["bye"])
+
+    # Night 2: should be fresh rotation
+    night2 = mgr.generate_night(players, 5, num_tables=2)
+    night2_byes = Counter(p for rnd in night2 for p in rnd["bye"])
+
+    # Both nights should have well-distributed byes
+    for label, counts in [("night1", night1_byes), ("night2", night2_byes)]:
+        assert all(c <= 2 for c in counts.values()), (
+            f"{label} player got bye {max(counts.values())} times: {counts}"
+        )
+    print("  bye rotation generate_night OK")
+
 
 

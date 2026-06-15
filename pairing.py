@@ -121,6 +121,7 @@ class LeaguePairingManager:
         self.total_possible = n * (n - 1) // 2
         self.state_path = state_path
         self.mode = mode
+        self._night_bye_counts = {}
         if state_path and os.path.exists(state_path):
             self._load()
 
@@ -182,6 +183,7 @@ class LeaguePairingManager:
         self.last_table_rosters = []
         self.player_last_table = {}
         self.round_count = 0
+        self._night_bye_counts.clear()
         if self.state_path:
             self.save()
 
@@ -416,7 +418,7 @@ class LeaguePairingManager:
             tables: [(tn, (a,b)|None, None)]
         """
         mode = mode or self.mode
-        present = sorted(present_players)
+        present = sorted(present_players, key=lambda p: -self._night_bye_counts.get(p, 0))
 
         if num_tables is None:
             denom = 2 if mode == "singles" else 4
@@ -451,6 +453,9 @@ class LeaguePairingManager:
         if self.state_path:
             self.save()
 
+        for p in unpaired:
+            self._night_bye_counts[p] = self._night_bye_counts.get(p, 0) + 1
+
         result = {
             "round": self.round_count,
             "tables": tables,
@@ -464,6 +469,7 @@ class LeaguePairingManager:
 
     def generate_night(self, present_players, num_rounds, num_tables=None, mode=None):
         """Generate multiple rounds for one league night."""
+        self._night_bye_counts.clear()
         return [
             self.next_round(present_players, num_tables, mode=mode)
             for _ in range(num_rounds)
