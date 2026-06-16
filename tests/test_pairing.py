@@ -844,4 +844,115 @@ def test_bye_rotation_generate_night():
     print("  bye rotation generate_night OK")
 
 
+# ── Bye rotation stress tests ──
+
+def test_bye_rotation_large_scale():
+    """50 players, 12 tables, 10 rounds — verify fair distribution under load."""
+    players = [f"P{i}" for i in range(50)]
+    mgr = LeaguePairingManager(players)
+
+    import time
+    t0 = time.perf_counter()
+    byes = []
+    for _ in range(10):
+        rnd = mgr.next_round(players, num_tables=12)
+        byes.extend(rnd["bye"])
+    t1 = time.perf_counter()
+
+    # 10 rounds × 2 byes = 20 bye-slots over 50 players → 0.4 avg
+    from collections import Counter
+    counts = Counter(byes)
+    max_b = max(counts.values()) if counts else 0
+    mean_b = len(byes) / len(players)
+
+    # With low bye density, most get 0, some get 1-2
+    assert max_b <= 3, (
+        f"Max byes {max_b} too high (mean {mean_b:.1f}, 50 players, 10 rounds)"
+    )
+    assert t1 - t0 < 5.0, f"Slow: {t1-t0:.2f}s"
+    print(f"  bye rotation large scale OK ({t1-t0:.2f}s, max={max_b}, mean={mean_b:.1f})")
+
+
+def test_bye_rotation_sparse_graph():
+    """Late-season sparse graph with byes — rotation still helps."""
+    players = [f"P{i}" for i in range(30)]
+    mgr = LeaguePairingManager(players)
+
+    # Burn through many pairs to make graph sparse
+    full = players[:24]  # 24 present, 6 tables
+    for _ in range(8):
+        mgr.next_round(full, num_tables=6)
+
+    # Now run 20 more rounds with same 24 players, 6 tables (0 byes, all matched)
+    # Then add 6 more players → 30 present, 6 tables (24 matched, 6 byes)
+    present = players  # 30 players, 6 tables → 24 matched, 6 byes
+    byes = []
+    for _ in range(10):
+        rnd = mgr.next_round(present, num_tables=6)
+        byes.extend(rnd["bye"])
+
+    from collections import Counter
+    counts = Counter(byes)
+
+    # 10 rounds × 6 byes = 60 bye-slots over 30 players → 2 avg
+    max_b = max(counts.values()) if counts else 0
+    assert max_b <= 4, (
+        f"Sparse graph: max byes {max_b} too high: {counts}"
+    )
+    print(f"  bye rotation sparse graph OK (max={max_b})")
+
+
+def test_bye_rotation_variable_attendance():
+    """Random subsets each round — bye distribution stays fair."""
+    import random
+    random.seed(42)
+
+    roster = [f"P{i}" for i in range(40)]
+    mgr = LeaguePairingManager(roster)
+
+    from collections import Counter
+    total_byes = Counter()
+
+    for _ in range(20):
+        # Random 18-22 of 40 players present
+        k = random.randint(18, 22)
+        present = random.sample(roster, k)
+        num_tables = k // 4  # Doubles
+        rnd = mgr.next_round(present, num_tables=num_tables)
+        total_byes.update(rnd["bye"])
+
+    # Don't enforce strict bounds (random attendance = uneven byes)
+    # Just verify no single player dominates
+    max_b = max(total_byes.values())
+    total = sum(total_byes.values())
+    expected = total / len(roster)
+    assert max_b <= int(expected * 3) + 1, (
+        f"Variable attendance: max byes {max_b} too high "
+        f"(mean {expected:.1f}, total {total}): {total_byes.most_common(5)}"
+    )
+    print(f"  bye rotation variable attendance OK (max={max_b}, mean={expected:.1f})")
+
+
+def test_bye_rotation_extreme():
+    """20 players, 1 table — 16 byes per round. Rotation should still work."""
+    players = [f"P{i}" for i in range(20)]
+    mgr = LeaguePairingManager(players)
+
+    byes = []
+    for _ in range(10):
+        rnd = mgr.next_round(players, num_tables=1)
+        byes.extend(rnd["bye"])
+
+    # 10 rounds × 16 byes = 160 over 20 players → 8 avg
+    from collections import Counter
+    counts = Counter(byes)
+    max_b = max(counts.values())
+
+    # With mean 8, max should be ≤ 11
+    assert max_b <= 11, (
+        f"Extreme byes: max {max_b} too high: {counts}"
+    )
+    print(f"  bye rotation extreme OK (max={max_b})")
+
+
 
