@@ -33,6 +33,7 @@ Generate fair, no-repeat pairings for a recurring crokinole league. Two modes:
 | **Roster** | All players in the league (superset of any night's attendance). |
 | **Present** | Subset of roster attending a given round. |
 | **Used pair** | Two players who have already been teammates. Tracked globally (not per-round). |
+| **Guest** | Player present for a night who is not in the roster. Auto-detected. |
 | **Cycle reset** | When all possible pairs are exhausted, the used-pair set clears and shuffle reseeds. |
 
 ## 3. Core Requirements
@@ -42,7 +43,8 @@ Generate fair, no-repeat pairings for a recurring crokinole league. Two modes:
 1. **No teammate repeats**: Two players who have teamed before must not team again until all other possible pairings are exhausted.
 2. **Table capacity**: Maximum teams = `num_tables * 2`. Players beyond capacity sit out (are paired to nothing, not paired-then-unpaired).
 3. **No self-pairing**: A player never paired with themselves.
-4. **Cycle reset**: When `used_pairs` reaches all `n*(n-1)//2` possible pairs, clear used-pair set and re-randomize to enable a new cycle.
+4. **Cycle reset**: When roster-roster pairs in `used_pairs` reach all `n*(n-1)//2` possible roster pairs, clear used-pair set and re-randomize to enable a new cycle. Guest-roster pairs do not count toward this threshold.
+5. **Guest no-repeat within night**: A guest (present but not in roster) must not pair with the same roster member more than once in a single night unless the guest has already paired with every roster member present that night.
 
 ### 3.2 Team Pairing — Soft Preferences
 
@@ -61,10 +63,11 @@ None. Table assignment is purely best-effort optimization.
 ### 3.5 Persistence (`LeaguePairingManager` only)
 
 1. **State file**: JSON format at configurable `state_path`.
-2. **Saved fields**: `used_pairs`, `last_table_rosters`, `player_last_table`, `round_count`.
-3. **On load**: Restore exact state so next round respects prior pairings.
-4. **On reset**: Clear all state (used pairs, history, table tracking) and persist empty state.
+2. **Saved fields**: `used_pairs`, `last_table_rosters`, `player_last_table`, `round_count`, `mode`, `night_bye_counts`, `night_guest_pairs`.
+3. **On load**: Restore exact state so next round respects prior pairings, bye counts, and guest tracking.
+4. **On reset**: Clear all state (used pairs, history, table tracking, bye counts, guest pairs) and persist empty state.
 5. **`last_table_rosters`**: Keep all prior rounds — prevents ping-pong repeats (e.g. Alice & Carol alternating table shares).
+6. **Crash recovery**: Every field flows through `get_state()`/`set_state()`. Firebase adapter persists entire state to Firestore each round — zero in-memory-only fields.
 
 ## 4. API Surface
 
@@ -131,7 +134,26 @@ Stateless quick-assign (no tracking). Used by `RoundRobinPairing`.
 - Accept `max_teams` parameter: truncate excess teams after matching.
 - Return `(teams, unpaired_players)`.
 
-### 5.3 Table Assignment (`LeaguePairingManager._assign_tables`)
+### 5.3 Guest Constraint (`LeaguePairingManager`)
+
+Guests are auto-detected: any player in `present_players` who is not in
+`all_players` (the roster).  A separate per-night set `_night_guest_pairs`
+tracks which roster members each guest has paired with during the current
+night.  This set is cleared at the start of each `generate_night()` call.
+
+During adjacency construction in `_find_matching`:
+
+1. If a guest-roster pair `(guest, roster)` already exists in
+   `_night_guest_pairs`, the edge is **removed** from the graph.
+2. Exception: the edge is kept if the guest has already paired with
+   **every** roster member currently present — the guest's partner set
+   is a superset of the present-roster set.
+
+After each round, every new guest-roster pair is recorded in
+`_night_guest_pairs`.  This constraint operates alongside the global
+`used_pairs` set (which prevents repeats across nights).
+
+### 5.4 Table Assignment (`LeaguePairingManager._assign_tables`)
 
 1. Greedy per-table: for each table 1..N, exhaustively evaluate all remaining team pairs (O(k²)) and pick minimizing `conflict_score`.
 2. `conflict_score = back_to_back_conflicts * 100 + table_repeat_penalty * 1`.
@@ -150,7 +172,9 @@ File: user-specified path (default: none). JSON format:
     ...
   ],
   "player_last_table": {"Alice": 1, "Bob": 2, ...},
-  "round_count": 42
+  "round_count": 42,
+  "night_bye_counts": {"Alice": 1, "Bob": 1},
+  "night_guest_pairs": [["GuestX", "Alice"], ["GuestX", "Bob"]]
 }
 ```
 
@@ -165,6 +189,9 @@ File: user-specified path (default: none). JSON format:
 | All pairs exhausted | `used_pairs` cleared, all players shuffled |
 | State file missing/corrupt | Start fresh (empty state, round 0) |
 | Player never before seen | Treated same as any other; pair constraints apply equally |
+| Guest present (`LeaguePairingManager` only) | Treated as auto-detected guest — no-repeat within night constraint applies |
+| Multiple guests | Guest-guest pairings are unconstrained; each guest-roster constraint is independent |
+| All guest-roster pairs exhausted within night | Repeats allowed (guest has paired with every present roster member) |
 | Single player in roster | `next_round()` returns `None` (`RoundRobinPairing`) or empty teams (`LeaguePairingManager`) |
 
 ## 8. Performance Bounds
@@ -196,5 +223,11 @@ Each spec item should map to at least one test. Current test coverage:
 - **Blossom correctness**: Implicit in all `LeaguePairingManager` tests; explicit near-exhaustion in `test_mgr_no_repeats_across_rounds`
 - **One-iteration proof**: `test_assign_tables_one_iter_sufficient` — full tie space (empty history), 20 trials all score 0, proving 1 iteration finds optimum
 - **Determinism**: `test_assign_tables_deterministic` — same score across calls signals iteration count is sufficient
+- **Guest no-repeat within night**: `test_guest_no_repeat_within_night`
+- **Guest repeats after full cycle**: `test_guest_repeats_after_all_paired`
+- **Guest cross-night no-repeat**: `test_guest_no_repeat_cross_night`
+- **Guest singles no-repeat**: `test_guest_singles_no_repeat`
+- **Guest no-op with roster only**: `test_guest_with_roster_only_present`
+- **Multiple guests**: `test_guest_multiple_guests`
 
-All tests in `tests/test_pairing.py`.
+All tests in `tests/test_pairing.py`.  Current total: 51 tests.

@@ -54,6 +54,8 @@ leagues/{leagueId}/
     ],
     player_last_table: {"Alice": 1, "Bob": 2, ...},
     round_count: 5,
+    night_bye_counts: {"Alice": 1, "Bob": 2},
+    night_guest_pairs: [["GuestX", "Alice"]],
     present: ["Alice","Bob","Carol","Dave","Eve","Frank","Grace","Henry"],
     num_tables: 2,
     updated_at: Timestamp
@@ -239,10 +241,7 @@ def generate_round_transaction(transaction, state_ref, mgr, present):
     snapshot = state_ref.get(transaction=transaction)
     if not snapshot.exists:
         return None
-    # The round_count check ensures no double-generation
-    mgr._mgr.round_count = snapshot.get("round_count")
-    mgr._mgr.used_pairs = {tuple(p) for p in snapshot.get("used_pairs", [])}
-    # ... load full state ...
+    mgr._mgr.set_state(snapshot.to_dict())
     rnd = mgr._mgr.next_round(present)
     mgr._push_to_firestore(rnd, present, None)
     return rnd
@@ -274,9 +273,10 @@ pip install firebase-admin
 
 | Rule | Hard/Soft | Detail |
 |------|-----------|--------|
-| No teammate repeats | **Hard** | Won't repeat until all `n(n-1)/2` pairs exhausted |
+| No teammate repeats | **Hard** | Won't repeat until all `n(n-1)/2` roster pairs exhausted |
+| Guest no-repeat within night | **Hard** | Guest won't repeat roster partner unless all present roster exhausted |
 | Table capacity | **Hard** | At most `num_tables * 2` teams; excess sit out |
-| Cycle reset | **Hard** | All pairs exhausted → clear and reshuffle |
+| Cycle reset | **Hard** | All roster-roster pairs exhausted → clear and reshuffle |
 | Back-to-back avoid | **Soft** | Penalty 100 per repeat table-share pair |
 | Table rotation | **Soft** | Penalty 1 per table-number repeat |
 
@@ -284,7 +284,7 @@ pip install firebase-admin
 
 ```
 pairing.py               Core engine (no Firebase dependency)
-tests/test_pairing.py    30 tests
+tests/test_pairing.py    51 tests
 examples/demo.py         24-player / 5-round demo
 README_CLAUDE.md         This file
 README.md                Algorithm deep-dive for engineers

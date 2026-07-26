@@ -297,17 +297,28 @@ def test_mgr_save_load():
 
     try:
         mgr1 = LeaguePairingManager(roster, state_path)
-        mgr1.next_round(["A", "B", "C", "D"])
+        mgr1.generate_night(["A", "B", "C", "D"], 3, num_tables=1)
         mgr1.save()
 
         used_before = set(mgr1.used_pairs)
+        bye_before = dict(mgr1._night_bye_counts)
+        guest_before = set(mgr1._night_guest_pairs)
+        round_before = mgr1.round_count
 
         # New instance loads from file
         mgr2 = LeaguePairingManager(roster, state_path)
         assert mgr2.used_pairs == used_before, (
-            "State mismatch after reload"
+            "used_pairs mismatch after reload"
         )
-        assert mgr2.round_count > 0
+        assert mgr2.round_count == round_before, (
+            "round_count mismatch after reload"
+        )
+        assert mgr2._night_bye_counts == bye_before, (
+            "night_bye_counts mismatch after reload"
+        )
+        assert mgr2._night_guest_pairs == guest_before, (
+            "night_guest_pairs mismatch after reload"
+        )
 
         # Next round respects saved state
         rnd = mgr2.next_round(["A", "B", "C", "D"])
@@ -323,8 +334,8 @@ def test_mgr_save_load():
 
 
 def test_mgr_reset():
-    """Reset clears used pairs."""
-    roster = ["A", "B", "C", "D"]
+    """Reset clears used pairs and night state."""
+    roster = ["A", "B", "C", "D", "E"]
     with tempfile.NamedTemporaryFile(
         mode="w", suffix=".json", delete=False
     ) as f:
@@ -335,13 +346,21 @@ def test_mgr_reset():
         mgr.generate_night(roster, 3)
         assert len(mgr.used_pairs) == 6
 
+        # Night state should have data before reset
+        assert len(mgr._night_bye_counts) > 0
+        assert len(mgr._night_guest_pairs) == 0  # no guests
+
         mgr.reset()
         assert len(mgr.used_pairs) == 0
         assert mgr.round_count == 0
+        assert len(mgr._night_bye_counts) == 0
+        assert len(mgr._night_guest_pairs) == 0
 
         # Verify persisted reset
         mgr2 = LeaguePairingManager(roster, state_path)
         assert len(mgr2.used_pairs) == 0
+        assert len(mgr2._night_bye_counts) == 0
+        assert len(mgr2._night_guest_pairs) == 0
     finally:
         os.unlink(state_path)
 
@@ -953,6 +972,157 @@ def test_bye_rotation_extreme():
         f"Extreme byes: max {max_b} too high: {counts}"
     )
     print(f"  bye rotation extreme OK (max={max_b})")
+
+
+# ── Guest constraint tests ──
+
+def test_guest_no_repeat_within_night():
+    """Guest paired with different roster member each round within one night."""
+    roster = ["A", "B", "C"]
+    mgr = LeaguePairingManager(roster)
+    present = ["A", "B", "C", "GuestX"]
+
+    rounds = mgr.generate_night(present, 3, num_tables=1)
+    assert len(rounds) == 3
+
+    guest_pairs = set()
+    for rnd in rounds:
+        for a, b in rnd["teams"]:
+            if a == "GuestX" or b == "GuestX":
+                pair = tuple(sorted((a, b)))
+                assert pair not in guest_pairs, (
+                    f"Guest repeated with same roster member: {pair}"
+                )
+                guest_pairs.add(pair)
+
+    assert len(guest_pairs) == 3, (
+        f"Guest should pair with each roster member once, got {len(guest_pairs)}"
+    )
+    print("  guest no repeat within night OK")
+
+
+def test_guest_repeats_after_all_paired():
+    """Guest can repeat after pairing with every present roster member."""
+    roster = ["A", "B", "C", "D", "E", "F"]
+    mgr = LeaguePairingManager(roster)
+    present = ["A", "B", "C", "GuestX"]
+
+    # Gens 5 rounds: 3 distinct roster pairings + 2 repeats (all exhausted)
+    rounds = mgr.generate_night(present, 5, num_tables=1)
+    assert len(rounds) == 5
+
+    guest_pairs = set()
+    for rnd in rounds:
+        for a, b in rnd["teams"]:
+            if a == "GuestX" or b == "GuestX":
+                guest_pairs.add(tuple(sorted((a, b))))
+
+    # Guest should have paired with all 3 roster members at some point
+    assert len(guest_pairs) >= 3, (
+        f"Guest should pair with all roster members, got {guest_pairs}"
+    )
+    assert ("A", "GuestX") in guest_pairs
+    assert ("B", "GuestX") in guest_pairs
+    assert ("C", "GuestX") in guest_pairs
+    print("  guest repeats after all paired OK")
+
+
+def test_guest_no_repeat_cross_night():
+    """Guest-roster pairs tracked across nights via used_pairs."""
+    roster = ["A", "B", "C", "D", "E"]
+    mgr = LeaguePairingManager(roster)
+    present = ["A", "B", "C", "GuestX"]
+
+    # Night 1: 3 rounds, fewer present than roster so total_possible not exhausted
+    night1 = mgr.generate_night(present, 3, num_tables=1)
+    assert len(night1) == 3
+
+    guest_night1 = set()
+    for rnd in night1:
+        for a, b in rnd["teams"]:
+            if a == "GuestX" or b == "GuestX":
+                guest_night1.add(tuple(sorted((a, b))))
+    assert len(guest_night1) >= 1
+
+    # Night 2: used_pairs prevents any repeat of night 1 pairs,
+    # but _night_guest_pairs is fresh (cleared by generate_night)
+    night2 = mgr.generate_night(present, 3, num_tables=1)
+    assert len(night2) == 3
+
+    guest_night2 = set()
+    for rnd in night2:
+        for a, b in rnd["teams"]:
+            if a == "GuestX" or b == "GuestX":
+                guest_night2.add(tuple(sorted((a, b))))
+
+    # No guest-roster pair from night 1 should repeat in night 2
+    repeats = guest_night1 & guest_night2
+    assert len(repeats) == 0, (
+        f"Guest-roster pairs repeated across nights: {repeats}"
+    )
+    print("  guest no repeat cross-night OK")
+
+
+def test_guest_singles_no_repeat():
+    """Singles: guest faces different opponent each round within night."""
+    roster = ["A", "B", "C"]
+    mgr = LeaguePairingManager(roster, mode="singles")
+    present = ["A", "B", "C", "GuestX"]
+
+    rounds = mgr.generate_night(present, 3, num_tables=2, mode="singles")
+    assert len(rounds) == 3
+
+    guest_opponents = set()
+    for rnd in rounds:
+        for a, b in rnd["matches"]:
+            if a == "GuestX":
+                assert b not in guest_opponents, (
+                    f"Guest faced same opponent twice: {b}"
+                )
+                guest_opponents.add(b)
+            elif b == "GuestX":
+                assert a not in guest_opponents, (
+                    f"Guest faced same opponent twice: {a}"
+                )
+                guest_opponents.add(a)
+
+    assert len(guest_opponents) == 3, (
+        f"Guest face each roster member once, got {guest_opponents}"
+    )
+    print("  guest singles no repeat OK")
+
+
+def test_guest_with_roster_only_present():
+    """No guests present: no effect on normal pairing."""
+    roster = ["A", "B", "C", "D"]
+    mgr = LeaguePairingManager(roster)
+
+    r1 = mgr.next_round(roster, num_tables=1)
+    r2 = mgr.next_round(roster, num_tables=1)
+
+    assert len(mgr._night_guest_pairs) == 0
+    assert len(r1["teams"]) == 2
+    assert len(r2["teams"]) == 2
+    print("  guest with roster only present OK")
+
+
+def test_guest_multiple_guests():
+    """Multiple guests: guest-guest pairings not constrained."""
+    roster = ["A", "B"]
+    mgr = LeaguePairingManager(roster)
+    present = ["A", "B", "GuestX", "GuestY"]
+
+    rnd = mgr.next_round(present, num_tables=1)
+    assert len(rnd["teams"]) == 2
+
+    guest_roster_pairs = 0
+    for a, b in rnd["teams"]:
+        if (a in mgr._roster_set) != (b in mgr._roster_set):
+            guest_roster_pairs += 1
+
+    # At least one guest-roster edge should be possible
+    # (X,Y can pair together or with A/B)
+    print("  guest multiple guests OK")
 
 
 

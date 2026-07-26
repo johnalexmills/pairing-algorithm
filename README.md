@@ -92,6 +92,7 @@ Verified empirically: 2000 brute-force comparisons with random histories, zero s
 | Constraint | Hard/Soft | Enforcement |
 |------------|-----------|-------------|
 | No teammate repeats | **Hard** | `_pair_key(a,b) not in used_pairs` during graph construction |
+| Guest no-repeat within night | **Hard** | `_night_guest_pairs` removes edges unless guest exhausted all present roster |
 | Table capacity | **Hard** | `max_teams = num_tables * 2` caps matching output |
 | Cycle reset | **Hard** | When `used_pairs` reaches `n(n-1)/2`, clear and reshuffle |
 | Back-to-back avoidance | **Soft** | Weight 100 in `_assign_tables` cost function |
@@ -112,6 +113,8 @@ Back-to-back can be structurally unavoidable in small pools (8 players / 2 table
 | `player_last_table` | `dict[str, int]` | Last table number per player, for rotation |
 | `round_count` | `int` | 1-based round counter |
 | `mode` | `str` | `"doubles"` or `"singles"` (set at construction) |
+| `night_bye_counts` | `dict[str, int]` | Per-night bye count per player (reset each `generate_night`) |
+| `night_guest_pairs` | `list[[str, str]]` | Per-night guest-roster pairs (reset each `generate_night`) |
 
 ### Persistence across sessions
 
@@ -147,6 +150,8 @@ Tested at 50-player roster, 20 present, 5 rounds — completes in < 1s.
 | Scenario | Behavior |
 |----------|----------|
 | 0–1 players | `teams: []`, all in `bye` |
+| Guest present | Auto-detected; no-repeat within night enforced. |
+| Multiple guests | Guest-guest unconstrained; each guest-roster constraint is independent. |
 | Present > table capacity | Excess players sit out (bye), never paired |
 | All pairs exhausted | `used_pairs` cleared, players reshuffled |
 | State file missing/corrupt | Fresh start |
@@ -156,7 +161,7 @@ Tested at 50-player roster, 20 present, 5 rounds — completes in < 1s.
 
 ```
 pairing.py              Core: RoundRobinPairing, LeaguePairingManager
-tests/test_pairing.py   38 tests (31 doubles + 7 singles)
+tests/test_pairing.py   51 tests (doubles + singles + guest constraints)
 examples/demo.py        24-player / 5-round doubles demo (own _box + visualize_round)
 examples/demo_singles.py  24-player / 5-round singles demo (own _box + visualize_singles_round)
 SPEC.md                 Full specification

@@ -1,6 +1,8 @@
 import json
 import os
 import random
+from collections import Counter, deque
+from itertools import combinations
 
 def _pair_key(a, b):
     return (a, b) if a <= b else (b, a)
@@ -97,6 +99,11 @@ class LeaguePairingManager:
     Persists state across sessions via JSON file.
     Supports doubles (2 teams per table) and singles (1 match per table).
 
+    Guests: any player in present_players but not in all_players is
+    treated as a guest.  Within a single night, a guest will not be
+    paired with the same roster member twice unless the guest has
+    already paired with every roster member present that night.
+
     Usage:
         mgr = LeaguePairingManager(roster, "state.json")
         r1 = mgr.next_round(["Alice","Bob","Carol","Dave"], num_tables=1)
@@ -122,6 +129,10 @@ class LeaguePairingManager:
         self.state_path = state_path
         self.mode = mode
         self._night_bye_counts = {}
+        self._roster_set = set(self.all_players)
+        self._night_guest_pairs = set()
+        self._table_share_counts = Counter()
+        self._roster_pair_count = 0
         if state_path and os.path.exists(state_path):
             self._load()
 
@@ -141,11 +152,30 @@ class LeaguePairingManager:
                 str(k): v for k, v in data.get("player_last_table", {}).items()
             }
             self.round_count = data.get("round_count", 0)
+            self._night_bye_counts = dict(data.get("night_bye_counts", {}))
+            self._night_guest_pairs = {
+                tuple(p) for p in data.get("night_guest_pairs", [])
+            }
+            self._roster_pair_count = sum(
+                1 for p in self.used_pairs
+                if p[0] in self._roster_set and p[1] in self._roster_set
+            )
+            table_counts = data.get("table_share_counts")
+            if table_counts is not None:
+                self._table_share_counts = Counter({
+                    tuple(k): v for k, v in table_counts
+                })
+            else:
+                self._rebuild_table_share_counts()
         except (json.JSONDecodeError, OSError):
             self.used_pairs = set()
             self.last_table_rosters = []
             self.player_last_table = {}
             self.round_count = 0
+            self._night_bye_counts = {}
+            self._night_guest_pairs = set()
+            self._table_share_counts = Counter()
+            self._roster_pair_count = 0
 
     def save(self):
         if not self.state_path:
@@ -165,6 +195,11 @@ class LeaguePairingManager:
             "player_last_table": dict(self.player_last_table),
             "round_count": self.round_count,
             "mode": self.mode,
+            "night_bye_counts": dict(self._night_bye_counts),
+            "night_guest_pairs": [list(p) for p in sorted(self._night_guest_pairs)],
+            "table_share_counts": [
+                [list(k), v] for k, v in self._table_share_counts.items()
+            ],
         }
 
     def set_state(self, data):
@@ -177,6 +212,21 @@ class LeaguePairingManager:
             str(k): v for k, v in data.get("player_last_table", {}).items()
         }
         self.round_count = data.get("round_count", 0)
+        self._night_bye_counts = dict(data.get("night_bye_counts", {}))
+        self._night_guest_pairs = {
+            tuple(p) for p in data.get("night_guest_pairs", [])
+        }
+        self._roster_pair_count = sum(
+            1 for p in self.used_pairs
+            if p[0] in self._roster_set and p[1] in self._roster_set
+        )
+        table_counts = data.get("table_share_counts")
+        if table_counts is not None:
+            self._table_share_counts = Counter({
+                tuple(k): v for k, v in table_counts
+            })
+        else:
+            self._rebuild_table_share_counts()
 
     def reset(self):
         self.used_pairs = set()
@@ -184,8 +234,25 @@ class LeaguePairingManager:
         self.player_last_table = {}
         self.round_count = 0
         self._night_bye_counts.clear()
+        self._night_guest_pairs.clear()
+        self._table_share_counts.clear()
+        self._roster_pair_count = 0
         if self.state_path:
             self.save()
+
+    def _rebuild_table_share_counts(self):
+        """Rebuild table_share_counts from last_table_rosters."""
+        counts = Counter()
+        for rosters in self.last_table_rosters:
+            seen_this_round = set()
+            for table_set in rosters:
+                players = list(table_set)
+                for a, b in combinations(players, 2):
+                    key = _pair_key(a, b)
+                    if key not in seen_this_round:
+                        counts[key] += 1
+                        seen_this_round.add(key)
+        self._table_share_counts = counts
 
     # ── Team matching ──
 
@@ -206,15 +273,41 @@ class LeaguePairingManager:
             return [], list(players)
 
         used = self.used_pairs
+        roster_set = self._roster_set
+        present_roster = {p for p in players if p in roster_set}
+
+        # Build guest partner lookup: guest -> set of roster partners this night
+        # (only partners present this round)
+        guest_partner_map = {}
+        if self._night_guest_pairs:
+            for g, r in self._night_guest_pairs:
+                if r in present_roster:
+                    s = guest_partner_map.get(g)
+                    if s is None:
+                        guest_partner_map[g] = {r}
+                    else:
+                        s.add(r)
 
         # Build adjacency: edge exists if pair not yet used
+        # and (for guest-roster pairs) not already paired this night
+        # unless guest has paired with all present roster members.
         adj = [[] for _ in range(n)]
         for i in range(n):
             pi = players[i]
             for j in range(i + 1, n):
-                if ((pi, players[j]) if pi < players[j] else (players[j], pi)) not in used:
-                    adj[i].append(j)
-                    adj[j].append(i)
+                pj = players[j]
+                key = _pair_key(pi, pj)
+                if key in used:
+                    continue
+                if self._night_guest_pairs and key in self._night_guest_pairs:
+                    pi_roster = pi in roster_set
+                    pj_roster = pj in roster_set
+                    if pi_roster != pj_roster:
+                        guest = pj if pi_roster else pi
+                        if guest_partner_map.get(guest, set()) < present_roster:
+                            continue
+                adj[i].append(j)
+                adj[j].append(i)
 
         # ── Edmonds' blossom algorithm ──────────────────────────
         mate = [-1] * n
@@ -244,11 +337,11 @@ class LeaguePairingManager:
             used = [False] * n
             p = [-1] * n
             base = list(range(n))
-            q = [root]
+            q = deque([root])
             used[root] = True
 
             while q:
-                v = q.pop(0)
+                v = q.popleft()
                 for to in adj[v]:
                     if base[v] == base[to] or mate[v] == to:
                         continue
@@ -294,13 +387,9 @@ class LeaguePairingManager:
         ]
 
         if max_teams and len(teams) > max_teams:
-            excess_players = []
-            for t in teams[max_teams:]:
-                excess_players.extend(t)
             teams = teams[:max_teams]
-            unpaired = [p for p in players if not any(
-                p in t for t in teams
-            )]
+            paired = {p for t in teams for p in t}
+            unpaired = [p for p in players if p not in paired]
             return teams, unpaired
 
         unpaired = [players[i] for i in range(n) if mate[i] == -1]
@@ -311,20 +400,12 @@ class LeaguePairingManager:
     def _table_conflict(self, players_at_table):
         """Repeated table-neighbor pairs across all prior rounds.
 
-        Each prior round where this pair shared a table adds 1
-        to the conflict count.  All rounds weighted equally so
-        that frequent repeaters are penalized increasingly.
+        Uses precomputed Counter for O(p²) lookup instead of
+        iterating all prior rosters.  p = players_at_table ≤ 4.
         """
-        if not self.last_table_rosters:
-            return 0
         conflicts = 0
-        for rosters in self.last_table_rosters:
-            for i, a in enumerate(players_at_table):
-                for b in players_at_table[i + 1:]:
-                    for table_set in rosters:
-                        if a in table_set and b in table_set:
-                            conflicts += 1
-                            break
+        for a, b in combinations(players_at_table, 2):
+            conflicts += self._table_share_counts.get(_pair_key(a, b), 0)
         return conflicts
 
     def _assign_tables(self, items, num_tables, mode="doubles"):
@@ -424,8 +505,9 @@ class LeaguePairingManager:
             denom = 2 if mode == "singles" else 4
             num_tables = max(1, len(present) // denom)
 
-        if self.total_possible > 0 and len(self.used_pairs) >= self.total_possible:
+        if self.total_possible > 0 and self._roster_pair_count >= self.total_possible:
             self.used_pairs = set()
+            self._roster_pair_count = 0
             random.shuffle(self.all_players)
 
         self.round_count += 1
@@ -433,12 +515,19 @@ class LeaguePairingManager:
         pairs, unpaired = self._find_matching(present, max_teams)
 
         for p in pairs:
-            self.used_pairs.add(_pair_key(*p))
+            key = _pair_key(*p)
+            self.used_pairs.add(key)
+            a, b = p
+            if (a in self._roster_set) != (b in self._roster_set):
+                self._night_guest_pairs.add(_pair_key(a, b))
+            elif a in self._roster_set:
+                self._roster_pair_count += 1
 
         tables = self._assign_tables(pairs, num_tables, mode=mode)
 
         # Record table rosters for back-to-back avoidance
         roster = []
+        seen_this_round = set()
         for tn, m1, m2 in tables:
             players_at = set()
             if m1 is not None:
@@ -448,6 +537,11 @@ class LeaguePairingManager:
             roster.append(players_at)
             for p in players_at:
                 self.player_last_table[p] = tn
+            for a, b in combinations(players_at, 2):
+                key = _pair_key(a, b)
+                if key not in seen_this_round:
+                    self._table_share_counts[key] += 1
+                    seen_this_round.add(key)
         self.last_table_rosters.append(roster)
 
         if self.state_path:
@@ -470,6 +564,7 @@ class LeaguePairingManager:
     def generate_night(self, present_players, num_rounds, num_tables=None, mode=None):
         """Generate multiple rounds for one league night."""
         self._night_bye_counts.clear()
+        self._night_guest_pairs.clear()
         return [
             self.next_round(present_players, num_tables, mode=mode)
             for _ in range(num_rounds)
